@@ -37,6 +37,7 @@ using Newtonsoft.Json;
 using NodaTime;
 using QuantConnect.Orders.Fees;
 using Order = QuantConnect.Orders.Order;
+using QuantConnect.Brokerages;
 
 namespace QuantConnect.MetaTraderBrokerage
 {
