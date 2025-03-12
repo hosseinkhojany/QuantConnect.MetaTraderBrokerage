@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using QuantConnect.Securities;
 
-namespace QuantConnect.Brokerages.MetaTrader
+namespace QuantConnect.MetaTraderBrokerage
 {
     public class SymbolMapper
     {

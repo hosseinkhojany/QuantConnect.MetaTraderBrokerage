@@ -22,7 +22,7 @@ using System.Collections.Generic;
 using QuantConnect.Util;
 using QuantConnect.Configuration;
 
-namespace QuantConnect.Brokerages.MetaTrader
+namespace QuantConnect.MetaTraderBrokerage
 {
     /// <summary>
     /// Provides a MetaTrader implementation of BrokerageFactory

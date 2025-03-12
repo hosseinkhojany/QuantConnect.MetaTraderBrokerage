@@ -3,10 +3,10 @@
     <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <TargetFramework>net9.0</TargetFramework>
-    <Product>QuantConnect.Brokerages.MetaTrader</Product>
-    <AssemblyName>QuantConnect.Brokerages.MetaTrader</AssemblyName>
-    <RootNamespace>QuantConnect.Brokerages.MetaTrader</RootNamespace>
-    <AssemblyTitle>QuantConnect.Brokerages.MetaTrader</AssemblyTitle>
+    <Product>QuantConnect.MetaTraderBrokerage</Product>
+    <AssemblyName>QuantConnect.MetaTraderBrokerage</AssemblyName>
+    <RootNamespace>QuantConnect.MetaTraderBrokerage</RootNamespace>
+    <AssemblyTitle>QuantConnect.MetaTraderBrokerage</AssemblyTitle>
     <OutputType>Library</OutputType>
     <OutputPath>bin\$(Configuration)\</OutputPath>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>

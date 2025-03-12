@@ -38,7 +38,7 @@ using NodaTime;
 using QuantConnect.Orders.Fees;
 using Order = QuantConnect.Orders.Order;
 
-namespace QuantConnect.Brokerages.MetaTrader
+namespace QuantConnect.MetaTraderBrokerage
 {
     [BrokerageFactory(typeof(MetaTraderBrokerageFactory))]
     public class MetaTraderBrokerage : Brokerage, IDataQueueHandler
