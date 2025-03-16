@@ -43,6 +43,7 @@ namespace QuantConnect.MetaTraderBrokerage
                 return new Dictionary<string, string>
                 {
                     { "mt-type", Config.Get("mt-type") },
+                    { "mt-port", Config.Get("mt-port") },
                 };
             }
         }
@@ -80,7 +81,7 @@ namespace QuantConnect.MetaTraderBrokerage
         /// </summary>
         public override void Dispose()
         {
-            throw new NotImplementedException();
+
         }
     }
 }

@@ -31,6 +31,8 @@ using System.Threading;
 using System.Collections.Concurrent;
 using System.Threading.Tasks;
 using MT.Models;
+using MtApi;
+using MtProxyUI.SharedQC;
 using QuantConnect.Data.Market;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json;
@@ -38,34 +40,19 @@ using NodaTime;
 using QuantConnect.Orders.Fees;
 using Order = QuantConnect.Orders.Order;
 using QuantConnect.Brokerages;
+using QuantConnect.Configuration;
+using Object = System.Object;
 
 namespace QuantConnect.MetaTraderBrokerage
 {
     [BrokerageFactory(typeof(MetaTraderBrokerageFactory))]
-    public class MetaTraderBrokerage : Brokerage, IDataQueueHandler
+    public class MetaTraderBrokerage : Brokerage
     {
-        private static readonly TimeSpan SubscribeDelay = TimeSpan.FromMilliseconds(250);
-        private readonly ManualResetEvent _refreshEvent = new ManualResetEvent(false);
-        private readonly CancellationTokenSource _streamingCancellationTokenSource = new CancellationTokenSource();
 
         private object Locker = new object();
-        private ConcurrentDictionary<int, OrderStatus> PendingFilledMarketOrders = new ConcurrentDictionary<int, OrderStatus>();
-        private IConnectionHandler PricingConnectionHandler;
-        private IConnectionHandler TransactionsConnectionHandler;
-        private SymbolMapper SymbolMapper = new SymbolMapper();
-        private EventBasedDataQueueHandlerSubscriptionManager _subscriptionManager;
-        private List<SubscriptionDataConfig> SubscribedSymbols = [];
-        private IOrderProvider OrderProvider;
-        private ISecurityProvider SecurityProvider;
-        private IDataAggregator Aggregator;
+        private SymbolMapper SymbolMapper = new();
         private LiveNodePacket job;
         private IAlgorithm algorithm;
-
-        private bool _unsupportedAssetForHistoryLogged;
-        private bool _unsupportedResolutionForHistoryLogged;
-        private bool _unsupportedTickTypeForHistoryLogged;
-        private bool _invalidTimeRangeHistoryLogged;
-        public const int MaxBarsPerRequest = 5000;
 
         private IMT metaTrader;
         private MTType mtType;
@@ -75,24 +62,34 @@ namespace QuantConnect.MetaTraderBrokerage
 
         public override bool IsConnected
         {
-            get { return _isInitialized && 
-            !TransactionsConnectionHandler.IsConnectionLost &&
-            !PricingConnectionHandler.IsConnectionLost &&
-            metaTrader.ConnectionStat() == ConnectionState.Connected; }
+            get
+            {
+                bool connected = metaTrader.ConnectionStat() == ConnectionState.Connected;
+                Logging.Log.Trace("IsConnected(MetaTrader):"+ connected);
+                return connected;
+            }
         }
 
         public MetaTraderBrokerage(LiveNodePacket job, IAlgorithm algorithm)
-            : this(Composer.Instance.GetPart<IDataAggregator>())
+            : base("MetaTrader Brokerage")
         {
+            Logging.Log.Trace("MetaTraderBrokerage(LiveNodePacket job, IAlgorithm algorithm)(MetaTrader):");
             this.job = job;
             this.algorithm = algorithm;
+            Initialize();
+        }
+        public MetaTraderBrokerage() : base("MetaTraderBrokerage")
+        {
+            Logging.Log.Trace("MetaTraderBrokerage()(MetaTrader):");
         }
 
         void ParseEnvs() {
 
             var errors = new List<string>();
             mtType = Read<MTType>(job.BrokerageData, "mt-type", errors);
-            port = Read<string>(job.BrokerageData, "port", errors);
+            Logging.Log.Trace("mtType(MetaTrader):"+ mtType);
+            port = Read<string>(job.BrokerageData, "mt-port", errors);
+            Logging.Log.Trace("port(MetaTrader):"+ port);
 
             if (errors.Count != 0)
             {
@@ -111,30 +108,17 @@ namespace QuantConnect.MetaTraderBrokerage
             ParseEnvs();
             if (mtType == MTType.MT5)
             {
-                metaTrader = new MT4(true);
+                metaTrader = new MT5(true);
             }
             else
             {
-                metaTrader = new MT5(true);
+                metaTrader = new MT4(true);
             }
-
-            OrderProvider = algorithm.Transactions;
-            SecurityProvider = algorithm.Portfolio;
-            _subscriptionManager = new EventBasedDataQueueHandlerSubscriptionManager();
-            _subscriptionManager.SubscribeImpl += AddSymbolSub;
-            _subscriptionManager.UnsubscribeImpl += RemoveSymbolSub;
-
-            PricingConnectionHandler = new DefaultConnectionHandler { MaximumIdleTimeSpan = TimeSpan.FromSeconds(20) };
-            PricingConnectionHandler.ConnectionLost += OnPricingConnectionLost;
-            PricingConnectionHandler.ConnectionRestored += OnPricingConnectionRestored;
-            PricingConnectionHandler.ReconnectRequested += OnPricingReconnectRequested;
-            PricingConnectionHandler.Initialize(null);
-
-            TransactionsConnectionHandler = new DefaultConnectionHandler { MaximumIdleTimeSpan = TimeSpan.FromSeconds(20) };
-            TransactionsConnectionHandler.ConnectionLost += OnTransactionsConnectionLost;
-            TransactionsConnectionHandler.ConnectionRestored += OnTransactionsConnectionRestored;
-            TransactionsConnectionHandler.ReconnectRequested += OnTransactionsReconnectRequested;
-            TransactionsConnectionHandler.Initialize(null);
+            
+            metaTrader.BeginConnect(port);
+            Thread.Sleep(3000);
+            
+            SymbolMapper.setMtType(mtType);
 
             OrdersStatusChanged += (sender, orderEvents) => OnOrderEvents(orderEvents);
             AccountChanged += (sender, accountEvent) => OnAccountChanged(accountEvent);
@@ -142,26 +126,11 @@ namespace QuantConnect.MetaTraderBrokerage
 
         }
 
-        public MetaTraderBrokerage(IDataAggregator aggregator) : base("MetaTraderBrokerage")
-        {
-            Initialize();
-            Aggregator = aggregator;
-
-        }
         
         
         #region Brokerage
 
 
-        public override IEnumerable<BaseData> GetHistory(Data.HistoryRequest request)
-        {
-            if (!CanSubscribe(request.Symbol))
-            {
-                return null; // Should consistently return null instead of an empty enumerable
-            }
-
-            throw new NotImplementedException();
-        }
         private Symbol GetSymbol(string instrument)
         {
             var securityType = SymbolMapper.GetBrokerageSecurityType(instrument);
@@ -169,7 +138,8 @@ namespace QuantConnect.MetaTraderBrokerage
         }
         public override List<Order> GetOpenOrders()
         {
-            
+            Logging.Log.Trace("GetOpenOrders(MetaTrader):");
+
             List<Order> orders = new List<Order>();
 
             foreach (var orderMt in metaTrader.GetOpenOrders())
@@ -249,7 +219,8 @@ namespace QuantConnect.MetaTraderBrokerage
 
         public override List<Holding> GetAccountHoldings()
         {
-            
+            Logging.Log.Trace("GetAccountHoldings(MetaTrader):");
+
             List<Holding> holders = new List<Holding>();
 
             foreach (var position in metaTrader.GetOpenPositions())
@@ -270,6 +241,7 @@ namespace QuantConnect.MetaTraderBrokerage
 
         public override List<CashAmount> GetCashBalance()
         {
+            Logging.Log.Trace("GetCashBalance(MetaTrader):");
             return new List<CashAmount>
             {
                 new CashAmount((decimal)metaTrader.AccountBalance(), "USD")
@@ -316,6 +288,7 @@ namespace QuantConnect.MetaTraderBrokerage
 
         public override bool PlaceOrder(Order order)
         {
+            Logging.Log.Trace("PlaceOrder(MetaTrader):"+ order.ToString());
             var orderFee = new OrderFee(new CashAmount());
             SendOrderRq mtOrder = GenerateSendOrderRq(order, OrderTypeRequest.CREATE);
             lock (Locker)
@@ -333,6 +306,7 @@ namespace QuantConnect.MetaTraderBrokerage
 
         public override bool UpdateOrder(Order order)
         {
+            Logging.Log.Trace("UpdateOrder(MetaTrader):"+ order.ToString());
             
             if (!order.BrokerId.Any())
             {
@@ -351,6 +325,7 @@ namespace QuantConnect.MetaTraderBrokerage
 
         public override bool CancelOrder(Order order)
         {
+            Logging.Log.Trace("CancelOrder(MetaTrader):"+ order.ToString());
             
             if (!order.BrokerId.Any())
             {
@@ -369,202 +344,29 @@ namespace QuantConnect.MetaTraderBrokerage
 
         public override void Connect()
         {
-            if (IsConnected) return;
-            metaTrader.BeginConnect(port);
-            StartTransactionStream();
-            TransactionsConnectionHandler.EnableMonitoring(true);
+            Logging.Log.Trace("Connect(MetaTrader):");
         }
 
 
         public override void Disconnect()
         {
-            metaTrader.BeginDisconnect();
-            TransactionsConnectionHandler.EnableMonitoring(false);
-            PricingConnectionHandler.EnableMonitoring(false);
-            StopTransactionStream();
-            StopPricingStream();
+            Logging.Log.Trace("Disconnect(MetaTrader):");
+            if (metaTrader != null) {
+                metaTrader.BeginDisconnect();
+            }
         }
 
         #endregion
-
-
-        #region IDataQueueHandler
-
-        public IEnumerator<BaseData> Subscribe(SubscriptionDataConfig dataConfig, EventHandler newDataAvailableHandler)
-        {
-            if (!CanSubscribe(dataConfig.Symbol))
-            {
-                return null;
-            }
-
-            var enumerator = Aggregator.Add(dataConfig, newDataAvailableHandler);
-            _subscriptionManager.Subscribe(dataConfig);
-            SubscribedSymbols.Add(dataConfig);
-
-            return enumerator;
-        }
-
-        public void Unsubscribe(SubscriptionDataConfig dataConfig)
-        {
-            _subscriptionManager.Unsubscribe(dataConfig);
-            Aggregator.Remove(dataConfig);
-            SubscribedSymbols.Remove(dataConfig);
-        }
-
-
-        public void SetJob(LiveNodePacket job)
-        {
-            ParseEnvs();
-            Initialize();
-
-            if (!IsConnected)
-            {
-                Connect();
-            }
-        }
-        #endregion
-
-
-        private void OnPricingConnectionLost(object sender, EventArgs e)
-        {
-            Log.Trace("OnPricingConnectionLost(): pricing connection lost.");
-
-            OnMessage(BrokerageMessageEvent.Disconnected("Pricing connection with Oanda server lost. " +
-                                                         "This could be because of internet connectivity issues. "));
-        }
-
-        private void OnPricingConnectionRestored(object sender, EventArgs e)
-        {
-            Log.Trace("OnPricingConnectionRestored(): pricing connection restored");
-
-            OnMessage(BrokerageMessageEvent.Reconnected("Pricing connection with Oanda server restored."));
-        }
-
-        private void OnPricingReconnectRequested(object sender, EventArgs e)
-        {
-            Log.Trace("OnPricingReconnectRequested(): resubscribing symbols.");
-
-            // restore rates session
-            //SubscribeSymbols(SubscribedSymbols);
-
-            Log.Trace("OnPricingReconnectRequested(): symbols resubscribed.");
-        }
-
-        private void OnTransactionsConnectionLost(object sender, EventArgs e)
-        {
-            Log.Trace("OnTransactionsConnectionLost(): transactions connection lost.");
-
-            OnMessage(BrokerageMessageEvent.Disconnected("Transactions connection with Oanda server lost. " +
-                                                         "This could be because of internet connectivity issues. "));
-        }
-
-        private void OnTransactionsConnectionRestored(object sender, EventArgs e)
-        {
-            Log.Trace("OnTransactionsConnectionRestored(): transactions connection restored");
-
-            OnMessage(BrokerageMessageEvent.Reconnected("Transactions connection with Oanda server restored."));
-        }
-
-        private void OnTransactionsReconnectRequested(object sender, EventArgs e)
-        {
-            Log.Trace("OnTransactionsReconnectRequested(): restarting transaction stream.");
-
-            // restore events session
-            //StopTransactionStream();
-            //StartTransactionStream();
-
-            Log.Trace("OnTransactionsReconnectRequested(): transaction stream restarted.");
-        }
         
-        public void StartTransactionStream()
-        {
-            throw new NotImplementedException();
-
-        }
-
-        public void StopTransactionStream()
-        {
-            throw new NotImplementedException();
-
-        }
-
-        public MT_ENUM_TIMEFRAMES ConvertResolutionToMtTimeframe(Resolution resolution)
-        {
-            switch (resolution)
-            {
-                case Resolution.Tick:
-                    return MT_ENUM_TIMEFRAMES.TICK;
-                case Resolution.Second:
-                    return MT_ENUM_TIMEFRAMES.SECOND;
-                case Resolution.Minute:
-                    return MT_ENUM_TIMEFRAMES.MINUTE;
-                case Resolution.Hour:
-                    return MT_ENUM_TIMEFRAMES.HOUR;
-                case Resolution.Daily:
-                    return MT_ENUM_TIMEFRAMES.DAILY;
-            }
-
-            return MT_ENUM_TIMEFRAMES.PERIOD_CURRENT;
-        }
-
-        public void StartPricingStream(List<SubscriptionDataConfig> instruments)
-        {
-            foreach (var instrument in instruments)
-            {
-                metaTrader.AddSymbolToChart(instrument.Symbol.Value, ConvertResolutionToMtTimeframe(instrument.Resolution));
-            }
-        }
-
-        public void StopPricingStream()
-        {
-            
-        }
-        
-        private bool CanSubscribe(Symbol symbol)
-        {
-            if (symbol.Value.IndexOfInvariant("universe", true) != -1 || symbol.IsCanonical())
-            {
-                return false;
-            }
-            return true;
-        }
-        
-        private bool AddSymbolSub(IEnumerable<Symbol> symbols, TickType tickType)
-        {
-            return true;
-        }
-        private bool RemoveSymbolSub(IEnumerable<Symbol> symbols, TickType tickType)
-        {
-            return true;
-        }
-        private bool Refresh()
-        {
-            _refreshEvent.Set();
-            return true;
-        }
         public override void Dispose()
         {
-            Aggregator.DisposeSafely();
-            _refreshEvent.DisposeSafely();
-
-            _streamingCancellationTokenSource.Cancel();
-
-            PricingConnectionHandler.ConnectionLost -= OnPricingConnectionLost;
-            PricingConnectionHandler.ConnectionRestored -= OnPricingConnectionRestored;
-            PricingConnectionHandler.ReconnectRequested -= OnPricingReconnectRequested;
-            PricingConnectionHandler.Dispose();
-
-            TransactionsConnectionHandler.ConnectionLost -= OnTransactionsConnectionLost;
-            TransactionsConnectionHandler.ConnectionRestored -= OnTransactionsConnectionRestored;
-            TransactionsConnectionHandler.ReconnectRequested -= OnTransactionsReconnectRequested;
-            TransactionsConnectionHandler.Dispose();
         }
 
         protected static T Read<T>(IReadOnlyDictionary<string, string> brokerageData, string key, ICollection<string> errors) where T : IConvertible
         {
             if (!brokerageData.TryGetValue(key, out var value))
             {
-                errors.Add("BrokerageFactory.CreateBrokerage(): Missing key: " + key);
+                errors.Add("BrokerageFactory.CreateBrokerage(): Missing key(MetaTrader):" + key);
                 return default(T);
             }
 
